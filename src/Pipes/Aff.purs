@@ -25,6 +25,9 @@ import Pipes.Core (Consumer_, Producer_)
 import Pipes (await, yield)
 import Unsafe.Coerce (unsafeCoerce)
 
+import Control.Monad.Aff.Unsafe (unsafeCoerceAff)
+import Control.Monad.Aff.Console (log)
+
 send :: ∀ eff a. Output eff a -> a -> Aff eff Boolean
 send (Output _send) v = _send v
 
@@ -43,7 +46,7 @@ spawn
                   }
 spawn buffer = do
   input /\ output <- case buffer of
-    Unbounded -> Bus.split <$> Bus.make
+    New -> Bus.split <$> Bus.make
 
   sealed <- makeVar' false
   let seal = putVar sealed true
@@ -54,9 +57,15 @@ spawn buffer = do
           then pure false
           else true <$ Bus.write a output
       readOrEnd = do
+        x <- peekVar sealed
         peekVar sealed >>= if _
           then pure Nothing
-          else Just <$> Bus.read input
+          else do
+            unsafeCoerceAff $ log "...waiting for v..."
+            v <- Bus.read input
+            unsafeCoerceAff $ log "...got v..."
+            unsafeCoerceAff $ log (unsafeCoerce v)
+            pure $ Just v
 
   pure {
     input: Input readOrEnd
@@ -95,12 +104,12 @@ fromInput (Input recv) = loop
           loop
 
 data Buffer a
-  = Unbounded
+  = New
+  -- | Unbounded
   -- | Bounded Int
   -- | Single
   -- | Latest a
   -- | Newest Int
-  -- | New
 
 -- -- | Store an unbounded number of messages in a FIFO queue
 -- unbounded :: Buffer a

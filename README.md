@@ -19,8 +19,9 @@
 
 #### Buffering
 
+* [ ] Implement buffer type: `Unbounded`
 * [ ] Implement buffer type: `Bounded Int`
 * [ ] Implement buffer type: `Single`
 * [ ] Implement buffer type: `Latest a`
 * [ ] Implement buffer type: `Newest Int`
-* [ ] Implement buffer type: `New`
+* [x] Implement buffer type: `New`
