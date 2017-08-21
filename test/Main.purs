@@ -8,17 +8,22 @@ import Control.Monad.Aff.Console (log)
 import Control.Monad.Aff (launchAff, forkAff, delay)
 
 import Pipes.Aff as Pipes
-import Pipes.Aff (Buffer(..))
-import Pipes.Prelude
+import Pipes.Aff (Buffer, unbounded)
+import Pipes.Prelude hiding (show)
 import Pipes.Core
 import Pipes hiding (discard)
 
 main :: forall e. Eff _ Unit
 main = void $ launchAff do
-  { input, output, seal } <- Pipes.spawn Unbounded
+  { input, output, seal } <- Pipes.spawn unbounded
+
   _ <- forkAff do
-    let loop = do
-          delay (100.0 # Milliseconds)
-          Pipes.send output "hi there"
-    loop
-  runEffect $ for (Pipes.fromInput input) $ lift <<< log
+    let loop n = do
+          delay (1.0 # Milliseconds)
+          _ <- Pipes.send output $ "n: " <> show n
+          when (n < 10) do
+            loop (n + 1)
+    loop 0
+
+  delay (10.0 # Milliseconds)
+  void $ forkAff $ runEffect $ for (Pipes.fromInput input) $ lift <<< log

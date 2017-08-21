@@ -4,7 +4,8 @@ module Pipes.Aff (
   , spawn
   , fromInput
   , toOutput
-  , Buffer(..)
+  , unbounded
+  , Buffer
   , Input
   , Output
   ) where
@@ -12,18 +13,20 @@ module Pipes.Aff (
 import Prelude
 import Data.Tuple (Tuple)
 import Data.Tuple.Nested ((/\))
+import Data.Array ((:))
+import Data.Array as Array
 import Data.Maybe (Maybe(..), maybe)
 import Control.Monad.Aff (Aff)
 import Control.Monad.Aff.Class (class MonadAff, liftAff)
 import Control.Monad.Aff.AVar (AffAVar, AVar, AVAR, makeVar, makeVar', modifyVar,
-                              peekVar, putVar)
-import Control.Monad.Aff.Bus (BusW, BusR)
-import Control.Monad.Aff.Bus as Bus
+                              peekVar, takeVar, putVar)
 import Control.Monad.Eff.Exception (error)
+import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Trans.Class (lift)
 import Pipes.Core (Consumer_, Producer_)
 import Pipes (await, yield)
 import Unsafe.Coerce (unsafeCoerce)
+import Debug.Trace
 
 send :: ∀ eff a. Output eff a -> a -> Aff eff Boolean
 send (Output _send) v = _send v
@@ -37,26 +40,25 @@ newtype Input eff a = Input (Aff eff (Maybe a))
 spawn
   :: ∀ a eff
    . Buffer a
-  -> AffAVar eff  { input :: Input (avar :: AVAR | eff) a
-                  , output :: Output (avar :: AVAR | eff) a
-                  , seal :: AffAVar eff Unit
-                  }
+  -> AffAVar eff
+      { input :: Input (avar :: AVAR | eff) a
+      , output :: Output (avar :: AVAR | eff) a
+      , seal :: AffAVar eff Unit
+      }
 spawn buffer = do
-  input /\ output <- case buffer of
-    Unbounded -> Bus.split <$> Bus.make
-
   sealed <- makeVar' false
   let seal = putVar sealed true
 
+  var <- makeVar
   let
       sendOrEnd a = do
         peekVar sealed >>= if _
           then pure false
-          else true <$ Bus.write a output
+          else true <$ putVar var a
       readOrEnd = do
         peekVar sealed >>= if _
           then pure Nothing
-          else Just <$> Bus.read input
+          else Just <$> takeVar var
 
   pure {
     input: Input readOrEnd
@@ -102,12 +104,12 @@ data Buffer a
   -- | Newest Int
   -- | New
 
--- -- | Store an unbounded number of messages in a FIFO queue
--- unbounded :: Buffer a
--- unbounded = Unbounded
---
+-- | Store an unbounded number of messages in a FIFO queue
+unbounded :: ∀ a. Buffer a
+unbounded = Unbounded
+
 -- -- | Store a bounded number of messages, specified by the 'Int' argument
--- bounded :: Int -> Buffer a
+-- bounded :: ∀ a. Int -> Buffer a
 -- bounded 1 = Single
 -- bounded n = Bounded n
 --
