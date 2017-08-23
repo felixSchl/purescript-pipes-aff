@@ -29,7 +29,6 @@ import Control.Alt ((<|>))
 import Pipes.Core (Consumer_, Producer_)
 import Pipes (await, yield)
 import Unsafe.Coerce (unsafeCoerce)
-import Debug.Trace
 
 send :: ∀ eff a. Output eff a -> a -> Aff eff Boolean
 send (Output _send) v = _send v
