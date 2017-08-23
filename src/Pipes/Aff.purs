@@ -15,14 +15,17 @@ import Data.Tuple (Tuple)
 import Data.Tuple.Nested ((/\))
 import Data.Array ((:))
 import Data.Array as Array
+import Data.Foldable (oneOf)
 import Data.Maybe (Maybe(..), maybe)
+import Control.Parallel.Class (sequential, parallel)
 import Control.Monad.Aff (Aff)
 import Control.Monad.Aff.Class (class MonadAff, liftAff)
 import Control.Monad.Aff.AVar (AffAVar, AVar, AVAR, makeVar, makeVar', modifyVar,
-                              peekVar, takeVar, putVar)
+                              peekVar, tryPeekVar, takeVar, putVar)
 import Control.Monad.Eff.Exception (error)
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Trans.Class (lift)
+import Control.Alt ((<|>))
 import Pipes.Core (Consumer_, Producer_)
 import Pipes (await, yield)
 import Unsafe.Coerce (unsafeCoerce)
@@ -46,19 +49,25 @@ spawn
       , seal :: AffAVar eff Unit
       }
 spawn buffer = do
-  sealed <- makeVar' false
-  let seal = putVar sealed true
+  sealed <- makeVar
+  let seal = putVar sealed unit
 
   var <- makeVar
   let
       sendOrEnd a = do
-        peekVar sealed >>= if _
-          then pure false
-          else true <$ putVar var a
+        tryPeekVar sealed >>= case _ of
+          Just _  -> pure false
+          Nothing -> sequential $ oneOf
+            [ parallel $ true <$ putVar var a
+            , parallel $ false <$ peekVar sealed
+            ]
       readOrEnd = do
-        peekVar sealed >>= if _
-          then pure Nothing
-          else Just <$> takeVar var
+        tryPeekVar sealed >>= case _ of
+          Just _  -> pure Nothing
+          Nothing -> sequential $ oneOf
+            [ parallel $ Just <$> takeVar var
+            , parallel $ Nothing <$ peekVar sealed
+            ]
 
   pure {
     input: Input readOrEnd
