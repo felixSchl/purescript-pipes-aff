@@ -1,128 +1,171 @@
 module Pipes.Aff (
     send
   , recv
+  , send'
+  , recv'
   , spawn
   , fromInput
+  , fromInput'
   , toOutput
+  , toOutput'
   , unbounded
   , new
+  , output
+  , input
+  , split
+  , seal
   , Buffer
   , Input
   , Output
+  , Channel
   ) where
 
 import Prelude
+
+import Control.Monad.Aff (Aff)
+import Control.Monad.Aff.AVar (AffAVar, AVar, AVAR, makeVar, peekVar, tryPeekVar, takeVar, putVar)
+import Control.Monad.Aff.Bus (BusR, BusW)
+import Control.Monad.Aff.Bus as Bus
+import Control.Monad.Aff.Class (class MonadAff, liftAff)
+import Control.Parallel.Class (sequential, parallel)
+import Data.Foldable (oneOf)
+import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple)
 import Data.Tuple.Nested ((/\))
-import Data.Array ((:))
-import Data.Array as Array
-import Data.Foldable (oneOf)
-import Data.Maybe (Maybe(..), maybe)
-import Control.Parallel.Class (sequential, parallel)
-import Control.Monad.Aff (Aff)
-import Control.Monad.Aff.Class (class MonadAff, liftAff)
-import Control.Monad.Aff.AVar (AffAVar, AVar, AVAR, makeVar, makeVar', modifyVar,
-                              peekVar, tryPeekVar, takeVar, putVar)
-import Control.Monad.Eff.Exception (error)
-import Control.Monad.Eff.Class (liftEff)
-import Control.Monad.Aff.Bus (BusW, BusR)
-import Control.Monad.Aff.Bus as Bus
-import Control.Monad.Trans.Class (lift)
-import Control.Alt ((<|>))
-import Pipes.Core (Consumer_, Producer_)
 import Pipes (await, yield)
-import Unsafe.Coerce (unsafeCoerce)
+import Pipes.Core (Consumer_, Producer_)
 
-send :: ∀ eff a. Output eff a -> a -> Aff eff Boolean
-send (Output _send) v = _send v
+type SealVar = AVar Unit
 
-recv :: ∀ eff a. Input eff a -> Aff eff (Maybe a)
-recv (Input _recv) = _recv
+seal:: ∀ a eff. Channel a -> Aff (avar :: AVAR | eff) Unit
+seal (UnboundedChannel sealVar _) = putVar sealVar unit
+seal (NewChannel sealVar _ _) = putVar sealVar unit
 
-newtype Output eff a = Output (a -> Aff eff Boolean)
-newtype Input eff a = Input (Aff eff (Maybe a))
+data Channel a
+  = UnboundedChannel SealVar (AVar a)
+  | NewChannel SealVar (BusR a) (BusW a)
+
+newtype Input a = Input (Channel a)
+newtype Output a = Output (Channel a)
+
+input :: ∀ a. Channel a -> Input a
+input = Input
+
+output :: ∀ a. Channel a -> Output a
+output = Output
+
+split
+  :: ∀ a
+   . Channel a
+  -> Tuple (Input a) (Output a)
+split channel = Input channel /\ Output channel
 
 spawn
   :: ∀ a eff
    . Buffer a
-  -> AffAVar eff
-      { input :: Input (avar :: AVAR | eff) a
-      , output :: Output (avar :: AVAR | eff) a
-      , seal :: AffAVar eff Unit
-      }
+  -> AffAVar eff (Channel a)
+
 spawn Unbounded = do
-  sealed <- makeVar
-  let seal = putVar sealed unit
-
+  sealVar <- makeVar
   var <- makeVar
-  let
-      sendOrEnd a = do
-        tryPeekVar sealed >>= case _ of
-          Just _  -> pure false
-          Nothing -> sequential $ oneOf
-            [ parallel $ true  <$ putVar var a
-            , parallel $ false <$ peekVar sealed
-            ]
-      readOrEnd = do
-        tryPeekVar sealed >>= case _ of
-          Just _  -> pure Nothing
-          Nothing -> sequential $ oneOf
-            [ parallel $ Just   <$> takeVar var
-            , parallel $ Nothing <$ peekVar sealed
-            ]
+  pure $ UnboundedChannel sealVar var
 
-  pure {
-    input: Input readOrEnd
-  , output: Output sendOrEnd
-  , seal
-  }
 spawn New = do
-  input /\ output <- Bus.split <$> Bus.make
+  sealVar <- makeVar
+  i /\ o <- Bus.split <$> Bus.make
+  pure $ NewChannel sealVar i o
 
-  sealed <- makeVar' false
-  let seal = putVar sealed true
+send
+  :: ∀ eff a
+   . a
+  -> Channel a
+  -> Aff (avar :: AVAR | eff) Boolean
+send a = send' a <<< output
 
-  let
-      sendOrEnd a = do
-        peekVar sealed >>= if _
-          then pure false
-          else true <$ Bus.write a output
-      readOrEnd = do
-        peekVar sealed >>= if _
-          then pure Nothing
-          else Just <$> Bus.read input
+send'
+  :: ∀ eff a
+   . a
+  -> Output a
+  -> Aff (avar :: AVAR | eff) Boolean
+send' a (Output (UnboundedChannel sealVar var)) = do
+  tryPeekVar sealVar >>= case _ of
+    Just _  -> pure false
+    Nothing -> sequential $ oneOf
+      [ parallel $ true  <$ putVar var a
+      , parallel $ false <$ peekVar sealVar
+      ]
+send' a (Output (NewChannel sealVar _ busW)) = do
+  tryPeekVar sealVar >>= case _ of
+    Just _  -> pure false
+    Nothing -> sequential $ oneOf
+      [ parallel $ true  <$ Bus.write a busW
+      , parallel $ false <$ peekVar sealVar
+      ]
 
-  pure {
-    input: Input readOrEnd
-  , output: Output sendOrEnd
-  , seal
-  }
+recv
+  :: ∀ eff a
+   . Channel a
+  -> Aff (avar :: AVAR | eff) (Maybe a)
+recv = recv' <<< input
+
+recv'
+  :: ∀ eff a
+   . Input a
+  -> Aff (avar :: AVAR | eff) (Maybe a)
+recv' (Input (UnboundedChannel sealVar var)) = do
+  tryPeekVar sealVar >>= case _ of
+    Just _  -> pure Nothing
+    Nothing -> sequential $ oneOf
+      [ parallel $ Just   <$> takeVar var
+      , parallel $ Nothing <$ peekVar sealVar
+      ]
+recv' (Input (NewChannel sealVar busR _)) = do
+  tryPeekVar sealVar >>= case _ of
+    Just _  -> pure Nothing
+    Nothing -> sequential $ oneOf
+      [ parallel $ Just    <$> Bus.read busR
+      , parallel $ Nothing <$ peekVar sealVar
+      ]
 
 {-| Convert an 'Output' to a 'Pipes.Consumer'
 -}
 toOutput
   :: ∀ a m eff
-   . MonadAff eff m
-  => Output eff a
+   . MonadAff (avar :: AVAR | eff) m
+  => Channel a
   -> Consumer_ a m Unit
-toOutput (Output send) = loop
+toOutput = toOutput' <<< output
+
+toOutput'
+  :: ∀ a m eff
+   . MonadAff (avar :: AVAR | eff) m
+  => Output a
+  -> Consumer_ a m Unit
+toOutput' out = loop
   where
     loop = do
       a <- await
-      alive <- lift (liftAff $ send a)
+      alive <- liftAff $ send' a out
       when alive loop
 
 {-| Convert an 'Input' to a 'Pipes.Producer'
 -}
 fromInput
   :: ∀ a m eff
-   . MonadAff eff m
-  => Input eff a
+   . MonadAff (avar :: AVAR | eff) m
+  => Channel a
   -> Producer_ a m Unit
-fromInput (Input recv) = loop
+fromInput = fromInput' <<< input
+
+fromInput'
+  :: ∀ a m eff
+   . MonadAff (avar :: AVAR | eff) m
+  => Input a
+  -> Producer_ a m Unit
+fromInput' inp = loop
   where
     loop = do
-      lift (liftAff recv) >>= case _ of
+      liftAff (recv' inp)  >>= case _ of
         Nothing -> pure unit
         Just v -> do
           yield v
