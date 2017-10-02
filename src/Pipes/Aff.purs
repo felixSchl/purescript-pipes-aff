@@ -30,7 +30,6 @@ import Data.Foldable (oneOf)
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple)
 import Data.Tuple.Nested ((/\))
-import Debug.Trace (traceAnyA)
 import Pipes (await, yield)
 import Pipes.Core (Consumer_, Producer_)
 

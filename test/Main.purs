@@ -13,7 +13,6 @@ import Control.Monad.Rec.Class (tailRecM, Step(..), forever)
 import Data.Array ((..))
 import Data.Array as Array
 import Data.Time.Duration (Milliseconds(..))
-import Debug.Trace (traceAnyA)
 import Pipes hiding (discard)
 import Pipes.Aff (Buffer, unbounded)
 import Pipes.Aff as P
@@ -28,7 +27,6 @@ main = void $ launchAff do
               if n < 1000000
                 then loop (n + 1)
                 else do
-                    traceAnyA "sealing it!!!"
                     P.seal channel
         loop 1
 
