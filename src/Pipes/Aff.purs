@@ -23,7 +23,7 @@ module Pipes.Aff (
 import Prelude
 
 import Control.Monad.Aff (Aff)
-import Control.Monad.Aff.AVar (AffAVar, AVar, AVAR, makeVar, peekVar, tryPeekVar, takeVar, putVar, tryTakeVar)
+import Control.Monad.Aff.AVar (AVar, AVAR, makeEmptyVar, readVar, tryReadVar, takeVar, putVar, tryTakeVar)
 import Control.Monad.Aff.Class (class MonadAff, liftAff)
 import Control.Parallel.Class (sequential, parallel)
 import Data.Foldable (oneOf)
@@ -37,8 +37,8 @@ import Pipes.Core (Consumer_, Producer_)
 type SealVar = AVar Unit
 
 seal:: ∀ a eff. Channel a -> Aff (avar :: AVAR | eff) Unit
-seal (UnboundedChannel sealVar _) = putVar sealVar unit
-seal (NewChannel sealVar _) = putVar sealVar unit
+seal (UnboundedChannel sealVar _) = putVar unit sealVar
+seal (NewChannel sealVar _) = putVar unit sealVar
 
 data Channel a
   = UnboundedChannel SealVar (AVar a)
@@ -62,16 +62,16 @@ split channel = Input channel /\ Output channel
 spawn
   :: ∀ a eff
    . Buffer a
-  -> AffAVar eff (Channel a)
+  -> Aff (avar :: AVAR | eff) (Channel a)
 
 spawn Unbounded = do
-  sealVar <- makeVar
-  var <- makeVar
+  sealVar <- makeEmptyVar
+  var <- makeEmptyVar
   pure $ UnboundedChannel sealVar var
 
 spawn New = do
-  sealVar <- makeVar
-  var <- makeVar
+  sealVar <- makeEmptyVar
+  var <- makeEmptyVar
   pure $ NewChannel sealVar var
 
 send
@@ -87,20 +87,18 @@ send'
   -> Output a
   -> Aff (avar :: AVAR | eff) Boolean
 send' a (Output (UnboundedChannel sealVar var)) = do
-  tryPeekVar sealVar >>= case _ of
+  tryReadVar sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ putVar var a
-      , parallel $ false <$ peekVar sealVar
+      [ parallel $ true  <$ putVar a var
+      , parallel $ false <$ readVar sealVar
       ]
 send' a (Output (NewChannel sealVar var)) = do
-  tryPeekVar sealVar >>= case _ of
+  tryReadVar sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ putVar var a
-      , parallel $ false <$ do
-          tryTakeVar var >>= case _ of
-                                _ -> putVar var a
+      [ parallel $ true  <$ putVar a var
+      , parallel $ false <$ (tryTakeVar var *> putVar a var)
       ]
 
 recv
@@ -114,18 +112,18 @@ recv'
    . Input a
   -> Aff (avar :: AVAR | eff) (Maybe a)
 recv' (Input (UnboundedChannel sealVar var)) = do
-  tryPeekVar sealVar >>= case _ of
+  tryReadVar sealVar >>= case _ of
     Just _  -> pure Nothing
     Nothing -> sequential $ oneOf
       [ parallel $ Just   <$> takeVar var
-      , parallel $ Nothing <$ peekVar sealVar
+      , parallel $ Nothing <$ readVar sealVar
       ]
 recv' (Input (NewChannel sealVar var)) = do
-  tryPeekVar sealVar >>= case _ of
+  tryReadVar sealVar >>= case _ of
     Just _  -> pure Nothing
     Nothing -> sequential $ oneOf
       [ parallel $ Just   <$> takeVar var
-      , parallel $ Nothing <$ peekVar sealVar
+      , parallel $ Nothing <$ readVar sealVar
       ]
 
 {-| Convert an 'Output' to a 'Pipes.Consumer'

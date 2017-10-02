@@ -14,8 +14,8 @@
   "dependencies": {
     "purescript-prelude": "^3.0.0",
     "purescript-console": "^3.0.0",
-    "purescript-pipes": "^4.0.0",
-    "purescript-aff": "felixschl/purescript-aff#fix/cancel-consumers"
+    "purescript-pipes": "^5.0.0",
+    "purescript-aff": "^4.0.0"
   },
   "devDependencies": {
     "purescript-psci-support": "^3.0.0",
