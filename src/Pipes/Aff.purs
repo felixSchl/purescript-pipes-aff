@@ -23,15 +23,14 @@ module Pipes.Aff (
 import Prelude
 
 import Control.Monad.Aff (Aff)
-import Control.Monad.Aff.AVar (AffAVar, AVar, AVAR, makeVar, peekVar, tryPeekVar, takeVar, putVar)
-import Control.Monad.Aff.Bus (BusR, BusW)
-import Control.Monad.Aff.Bus as Bus
+import Control.Monad.Aff.AVar (AffAVar, AVar, AVAR, makeVar, peekVar, tryPeekVar, takeVar, putVar, tryTakeVar)
 import Control.Monad.Aff.Class (class MonadAff, liftAff)
 import Control.Parallel.Class (sequential, parallel)
 import Data.Foldable (oneOf)
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple)
 import Data.Tuple.Nested ((/\))
+import Debug.Trace (traceAnyA)
 import Pipes (await, yield)
 import Pipes.Core (Consumer_, Producer_)
 
@@ -39,11 +38,11 @@ type SealVar = AVar Unit
 
 seal:: ∀ a eff. Channel a -> Aff (avar :: AVAR | eff) Unit
 seal (UnboundedChannel sealVar _) = putVar sealVar unit
-seal (NewChannel sealVar _ _) = putVar sealVar unit
+seal (NewChannel sealVar _) = putVar sealVar unit
 
 data Channel a
   = UnboundedChannel SealVar (AVar a)
-  | NewChannel SealVar (BusR a) (BusW a)
+  | NewChannel SealVar (AVar a)
 
 newtype Input a = Input (Channel a)
 newtype Output a = Output (Channel a)
@@ -72,8 +71,8 @@ spawn Unbounded = do
 
 spawn New = do
   sealVar <- makeVar
-  i /\ o <- Bus.split <$> Bus.make
-  pure $ NewChannel sealVar i o
+  var <- makeVar
+  pure $ NewChannel sealVar var
 
 send
   :: ∀ eff a
@@ -94,12 +93,14 @@ send' a (Output (UnboundedChannel sealVar var)) = do
       [ parallel $ true  <$ putVar var a
       , parallel $ false <$ peekVar sealVar
       ]
-send' a (Output (NewChannel sealVar _ busW)) = do
+send' a (Output (NewChannel sealVar var)) = do
   tryPeekVar sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ Bus.write a busW
-      , parallel $ false <$ peekVar sealVar
+      [ parallel $ true  <$ putVar var a
+      , parallel $ false <$ do
+          tryTakeVar var >>= case _ of
+                                _ -> putVar var a
       ]
 
 recv
@@ -119,11 +120,11 @@ recv' (Input (UnboundedChannel sealVar var)) = do
       [ parallel $ Just   <$> takeVar var
       , parallel $ Nothing <$ peekVar sealVar
       ]
-recv' (Input (NewChannel sealVar busR _)) = do
+recv' (Input (NewChannel sealVar var)) = do
   tryPeekVar sealVar >>= case _ of
     Just _  -> pure Nothing
     Nothing -> sequential $ oneOf
-      [ parallel $ Just    <$> Bus.read busR
+      [ parallel $ Just   <$> takeVar var
       , parallel $ Nothing <$ peekVar sealVar
       ]
 
