@@ -22,7 +22,7 @@ module Pipes.Aff (
 
 import Prelude
 
-import Control.Monad.Aff (Aff)
+import Control.Monad.Aff (Aff, forkAff)
 import Control.Monad.Aff.AVar (AVar, AVAR, makeEmptyVar, readVar, tryReadVar, takeVar, putVar, tryTakeVar)
 import Control.Monad.Aff.Class (class MonadAff, liftAff)
 import Control.Parallel.Class (sequential, parallel)
@@ -89,15 +89,15 @@ send' a (Output (UnboundedChannel sealVar var)) = do
   tryReadVar sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ putVar a var
+      [ parallel $ true  <$ forkAff (putVar a var)
       , parallel $ false <$ readVar sealVar
       ]
 send' a (Output (NewChannel sealVar var)) = do
   tryReadVar sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ putVar a var
-      , parallel $ false <$ (tryTakeVar var *> putVar a var)
+      [ parallel $ true  <$ (tryTakeVar var *> putVar a var)
+      , parallel $ false <$ readVar sealVar
       ]
 
 recv
