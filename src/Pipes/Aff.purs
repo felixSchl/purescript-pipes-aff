@@ -10,6 +10,7 @@ module Pipes.Aff (
   , toOutput'
   , unbounded
   , new
+  , realTime
   , output
   , input
   , split
@@ -22,10 +23,12 @@ module Pipes.Aff (
 
 import Prelude
 
-import Control.Monad.Aff (Aff, forkAff)
+import Control.Monad.Aff (Aff, forkAff, delay)
+import Data.Time.Duration (Milliseconds(..))
 import Control.Monad.Aff.AVar (AVar, AVAR, makeEmptyVar, readVar, tryReadVar, takeVar, putVar, tryTakeVar)
 import Control.Monad.Aff.Class (class MonadAff, liftAff)
 import Control.Parallel.Class (sequential, parallel)
+import Data.Either
 import Data.Foldable (oneOf)
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple)
@@ -37,11 +40,13 @@ type SealVar = AVar Unit
 
 seal:: ∀ a eff. Channel a -> Aff (avar :: AVAR | eff) Unit
 seal (UnboundedChannel sealVar _) = putVar unit sealVar
-seal (NewChannel sealVar _) = putVar unit sealVar
+seal (NewestChannel    sealVar _) = putVar unit sealVar
+seal (RealTimeChannel  sealVar _) = putVar unit sealVar
 
 data Channel a
   = UnboundedChannel SealVar (AVar a)
-  | NewChannel SealVar (AVar a)
+  | NewestChannel    SealVar (AVar a)
+  | RealTimeChannel  SealVar (AVar a)
 
 newtype Input a = Input (Channel a)
 newtype Output a = Output (Channel a)
@@ -71,7 +76,12 @@ spawn Unbounded = do
 spawn New = do
   sealVar <- makeEmptyVar
   var <- makeEmptyVar
-  pure $ NewChannel sealVar var
+  pure $ NewestChannel sealVar var
+
+spawn RealTime = do
+  sealVar <- makeEmptyVar
+  var <- makeEmptyVar
+  pure $ RealTimeChannel sealVar var
 
 send
   :: ∀ eff a
@@ -92,11 +102,22 @@ send' a (Output (UnboundedChannel sealVar var)) = do
       [ parallel $ true  <$ forkAff (putVar a var)
       , parallel $ false <$ readVar sealVar
       ]
-send' a (Output (NewChannel sealVar var)) = do
+send' a (Output (NewestChannel sealVar var)) = do
   tryReadVar sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
       [ parallel $ true  <$ (tryTakeVar var *> putVar a var)
+      , parallel $ false <$ readVar sealVar
+      ]
+send' a (Output (RealTimeChannel sealVar var)) = do
+  tryReadVar sealVar >>= case _ of
+    Just _  -> pure false
+    Nothing -> sequential $ oneOf
+      [ parallel $ true  <$ (tryTakeVar var *> do
+          putVar a var
+          liftAff $ delay $ 0.0 # Milliseconds
+          tryTakeVar var
+        )
       , parallel $ false <$ readVar sealVar
       ]
 
@@ -117,11 +138,18 @@ recv' (Input (UnboundedChannel sealVar var)) = do
       [ parallel $ Just   <$> takeVar var
       , parallel $ Nothing <$ readVar sealVar
       ]
-recv' (Input (NewChannel sealVar var)) = do
+recv' (Input (NewestChannel sealVar var)) = do
   tryReadVar sealVar >>= case _ of
     Just _  -> pure Nothing
     Nothing -> sequential $ oneOf
       [ parallel $ Just   <$> takeVar var
+      , parallel $ Nothing <$ readVar sealVar
+      ]
+recv' c@(Input (RealTimeChannel sealVar var)) = do
+  tryReadVar sealVar >>= case _ of
+    Just _  -> pure Nothing
+    Nothing -> sequential $ oneOf
+      [ parallel $ Just    <$> takeVar var
       , parallel $ Nothing <$ readVar sealVar
       ]
 
@@ -172,6 +200,7 @@ fromInput' inp = loop
 data Buffer a
   = Unbounded
   | New
+  | RealTime
   -- | Bounded Int
   -- | Latest a
   -- | Newest Int
@@ -184,20 +213,6 @@ unbounded = Unbounded
 new :: ∀ a. Buffer a
 new = New
 
--- -- | Store a bounded number of messages, specified by the 'Int' argument
--- bounded :: ∀ a. Int -> Buffer a
--- bounded 1 = Single
--- bounded n = Bounded n
---
--- {-| Only store the 'Latest' message, beginning with an initial value
---     'Latest' is never empty nor full.
--- -}
--- latest :: a -> Buffer a
--- latest = Latest
---
--- {-| Like `Bounded`, but `send` never fails (the buffer is never full).
---     Instead, old elements are discard to make room for new elements
--- -}
--- newest :: Int -> Buffer a
--- newest 1 = New
--- newest n = Newest n
+-- |
+realTime :: ∀ a. Buffer a
+realTime = RealTime
