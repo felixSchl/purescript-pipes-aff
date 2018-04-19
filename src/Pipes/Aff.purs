@@ -15,6 +15,7 @@ module Pipes.Aff (
   , input
   , split
   , seal
+  , kill
   , Buffer
   , Input
   , Output
@@ -22,15 +23,13 @@ module Pipes.Aff (
   ) where
 
 import Prelude
-
-import Control.Monad.Aff (Aff, forkAff, delay)
-import Data.Time.Duration (Milliseconds(..))
-import Control.Monad.Aff.AVar (AVar, AVAR, makeEmptyVar, readVar, tryReadVar, takeVar, putVar, tryTakeVar)
+import Control.Monad.Aff (Aff, Error, delay, forkAff)
+import Control.Monad.Aff.AVar (AVAR, AVar, killVar, makeEmptyVar, putVar, readVar, takeVar, tryPutVar, tryReadVar, tryTakeVar)
 import Control.Monad.Aff.Class (class MonadAff, liftAff)
 import Control.Parallel.Class (sequential, parallel)
-import Data.Either
 import Data.Foldable (oneOf)
 import Data.Maybe (Maybe(..))
+import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple)
 import Data.Tuple.Nested ((/\))
 import Pipes (await, yield)
@@ -39,9 +38,20 @@ import Pipes.Core (Consumer_, Producer_)
 type SealVar = AVar Unit
 
 seal:: ∀ a eff. Channel a -> Aff (avar :: AVAR | eff) Unit
-seal (UnboundedChannel sealVar _) = putVar unit sealVar
-seal (NewestChannel    sealVar _) = putVar unit sealVar
-seal (RealTimeChannel  sealVar _) = putVar unit sealVar
+seal (UnboundedChannel sealVar _) = void $ tryPutVar unit sealVar
+seal (NewestChannel sealVar    _) = void $ tryPutVar unit sealVar
+seal (RealTimeChannel sealVar  _) = void $ tryPutVar unit sealVar
+
+kill:: ∀ a eff. Error -> Channel a -> Aff (avar :: AVAR | eff) Unit
+kill e (UnboundedChannel sealVar v) = do
+  killVar e sealVar
+  killVar e v
+kill e (NewestChannel sealVar v) = do
+  killVar e sealVar
+  killVar e v
+kill e (RealTimeChannel sealVar v) = do
+  killVar e sealVar
+  killVar e v
 
 data Channel a
   = UnboundedChannel SealVar (AVar a)
