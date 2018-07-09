@@ -1,27 +1,20 @@
 module Test.Main where
 
-import Control.Monad.Aff.AVar
-import Control.Parallel
-import Data.Maybe
-import Debug.Trace
-import Pipes.Core
 import Prelude
 
-import Control.Monad.Aff (forkAff, delay, joinFiber, launchAff)
-import Control.Monad.Aff.Class (liftAff)
-import Control.Monad.Eff (Eff)
-import Control.Monad.Eff.Class (liftEff)
-import Control.Monad.Eff.Ref (newRef, readRef, modifyRef)
-import Control.Monad.Rec.Class (tailRecM, Step(..), forever)
-import Data.Array ((..), (:))
+import Control.Parallel (parallel, sequential)
+import Pipes.Core (runEffect)
+import Effect.Aff (delay, forkAff, joinFiber)
+import Effect.Aff.Class (liftAff)
+import Effect (Effect)
+import Effect.Class (liftEffect)
+import Effect.Ref as Ref
 import Data.Array as Array
 import Data.Foldable (for_, oneOf)
 import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple.Nested ((/\))
-import Pipes hiding (discard)
-import Pipes.Aff (Buffer, fromInput, unbounded)
+import Pipes (for)
 import Pipes.Aff as P
-import Pipes.Prelude hiding (show,map)
 import Test.Spec (describe, it)
 import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter.Console (consoleReporter)
@@ -30,7 +23,7 @@ import Test.Spec.Runner (run', defaultConfig)
 data TestBufferType = TestUnbounded | TestNew
 derive instance eqTestBuffer :: Eq TestBufferType
 
-main :: Eff _ Unit
+main :: Effect Unit
 main = run' defaultConfig [consoleReporter] do
   describe "pipes-aff" do
     describe "channels" do
@@ -69,10 +62,10 @@ main = run' defaultConfig [consoleReporter] do
               chan <- P.spawn buffer
               flip shouldEqual true =<< P.send 1 chan
               flip shouldEqual true =<< P.send 2 chan
-              ref <- liftEff $ newRef []
+              ref <- liftEffect $ Ref.new []
               runEffect $ for (P.fromInput chan) \v -> do
-                liftEff $ modifyRef ref (flip Array.snoc v)
+                _ <- liftEffect $ Ref.modify (flip Array.snoc v) ref
                 when (v == 2) do
                   liftAff $ P.seal chan
-              flip shouldEqual [1, 2] =<< liftEff (readRef ref)
+              flip shouldEqual [1, 2] =<< liftEffect (Ref.read ref)
 
