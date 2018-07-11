@@ -23,9 +23,9 @@ module Pipes.Aff (
   ) where
 
 import Prelude
-import Control.Monad.Aff (Aff, Error, delay, forkAff)
-import Control.Monad.Aff.AVar (AVAR, AVar, killVar, makeEmptyVar, putVar, readVar, takeVar, tryPutVar, tryReadVar, tryTakeVar)
-import Control.Monad.Aff.Class (class MonadAff, liftAff)
+import Effect.Aff (Aff, Error, delay, forkAff)
+import Effect.Aff.AVar as AVar
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Control.Parallel.Class (sequential, parallel)
 import Data.Foldable (oneOf)
 import Data.Maybe (Maybe(..))
@@ -35,28 +35,28 @@ import Data.Tuple.Nested ((/\))
 import Pipes (await, yield)
 import Pipes.Core (Consumer_, Producer_)
 
-type SealVar = AVar Unit
+type SealVar = AVar.AVar Unit
 
-seal:: ∀ a eff. Channel a -> Aff (avar :: AVAR | eff) Unit
-seal (UnboundedChannel sealVar _) = void $ tryPutVar unit sealVar
-seal (NewestChannel sealVar    _) = void $ tryPutVar unit sealVar
-seal (RealTimeChannel sealVar  _) = void $ tryPutVar unit sealVar
+seal:: ∀ a. Channel a -> Aff Unit
+seal (UnboundedChannel sealVar _) = void $ AVar.tryPut unit sealVar
+seal (NewestChannel sealVar    _) = void $ AVar.tryPut unit sealVar
+seal (RealTimeChannel sealVar  _) = void $ AVar.tryPut unit sealVar
 
-kill:: ∀ a eff. Error -> Channel a -> Aff (avar :: AVAR | eff) Unit
+kill:: ∀ a. Error -> Channel a -> Aff Unit
 kill e (UnboundedChannel sealVar v) = do
-  killVar e sealVar
-  killVar e v
+  AVar.kill e sealVar
+  AVar.kill e v
 kill e (NewestChannel sealVar v) = do
-  killVar e sealVar
-  killVar e v
+  AVar.kill e sealVar
+  AVar.kill e v
 kill e (RealTimeChannel sealVar v) = do
-  killVar e sealVar
-  killVar e v
+  AVar.kill e sealVar
+  AVar.kill e v
 
 data Channel a
-  = UnboundedChannel SealVar (AVar a)
-  | NewestChannel    SealVar (AVar a)
-  | RealTimeChannel  SealVar (AVar a)
+  = UnboundedChannel SealVar (AVar.AVar a)
+  | NewestChannel    SealVar (AVar.AVar a)
+  | RealTimeChannel  SealVar (AVar.AVar a)
 
 newtype Input a = Input (Channel a)
 newtype Output a = Output (Channel a)
@@ -74,107 +74,107 @@ split
 split channel = Input channel /\ Output channel
 
 spawn
-  :: ∀ a eff
+  :: ∀ a
    . Buffer a
-  -> Aff (avar :: AVAR | eff) (Channel a)
+  -> Aff (Channel a)
 
 spawn Unbounded = do
-  sealVar <- makeEmptyVar
-  var <- makeEmptyVar
+  sealVar <- AVar.empty
+  var <- AVar.empty
   pure $ UnboundedChannel sealVar var
 
 spawn New = do
-  sealVar <- makeEmptyVar
-  var <- makeEmptyVar
+  sealVar <- AVar.empty
+  var <- AVar.empty
   pure $ NewestChannel sealVar var
 
 spawn RealTime = do
-  sealVar <- makeEmptyVar
-  var <- makeEmptyVar
+  sealVar <- AVar.empty
+  var <- AVar.empty
   pure $ RealTimeChannel sealVar var
 
 send
-  :: ∀ eff a
+  :: ∀ a
    . a
   -> Channel a
-  -> Aff (avar :: AVAR | eff) Boolean
+  -> Aff Boolean
 send a = send' a <<< output
 
 send'
-  :: ∀ eff a
+  :: ∀ a
    . a
   -> Output a
-  -> Aff (avar :: AVAR | eff) Boolean
+  -> Aff Boolean
 send' a (Output (UnboundedChannel sealVar var)) = do
-  tryReadVar sealVar >>= case _ of
+  AVar.tryRead sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ forkAff (putVar a var)
-      , parallel $ false <$ readVar sealVar
+      [ parallel $ true  <$ forkAff (AVar.put a var)
+      , parallel $ false <$ AVar.read sealVar
       ]
 send' a (Output (NewestChannel sealVar var)) = do
-  tryReadVar sealVar >>= case _ of
+  AVar.tryRead sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ (tryTakeVar var *> putVar a var)
-      , parallel $ false <$ readVar sealVar
+      [ parallel $ true  <$ (AVar.tryTake var *> AVar.put a var)
+      , parallel $ false <$ AVar.read sealVar
       ]
 send' a (Output (RealTimeChannel sealVar var)) = do
-  tryReadVar sealVar >>= case _ of
+  AVar.tryRead sealVar >>= case _ of
     Just _  -> pure false
     Nothing -> sequential $ oneOf
-      [ parallel $ true  <$ (tryTakeVar var *> do
-          putVar a var
+      [ parallel $ true  <$ (AVar.tryTake var *> do
+          AVar.put a var
           liftAff $ delay $ 0.0 # Milliseconds
-          tryTakeVar var
+          AVar.tryTake var
         )
-      , parallel $ false <$ readVar sealVar
+      , parallel $ false <$ AVar.read sealVar
       ]
 
 recv
-  :: ∀ eff a
+  :: ∀ a
    . Channel a
-  -> Aff (avar :: AVAR | eff) (Maybe a)
+  -> Aff (Maybe a)
 recv = recv' <<< input
 
 recv'
-  :: ∀ eff a
+  :: ∀ a
    . Input a
-  -> Aff (avar :: AVAR | eff) (Maybe a)
+  -> Aff (Maybe a)
 recv' (Input (UnboundedChannel sealVar var)) = do
-  tryReadVar sealVar >>= case _ of
+  AVar.tryRead sealVar >>= case _ of
     Just _  -> pure Nothing
     Nothing -> sequential $ oneOf
-      [ parallel $ Just   <$> takeVar var
-      , parallel $ Nothing <$ readVar sealVar
+      [ parallel $ Just    <$> AVar.take var
+      , parallel $ Nothing <$  AVar.read sealVar
       ]
 recv' (Input (NewestChannel sealVar var)) = do
-  tryReadVar sealVar >>= case _ of
+  AVar.tryRead sealVar >>= case _ of
     Just _  -> pure Nothing
     Nothing -> sequential $ oneOf
-      [ parallel $ Just   <$> takeVar var
-      , parallel $ Nothing <$ readVar sealVar
+      [ parallel $ Just    <$> AVar.take var
+      , parallel $ Nothing <$  AVar.read sealVar
       ]
 recv' c@(Input (RealTimeChannel sealVar var)) = do
-  tryReadVar sealVar >>= case _ of
+  AVar.tryRead sealVar >>= case _ of
     Just _  -> pure Nothing
     Nothing -> sequential $ oneOf
-      [ parallel $ Just    <$> takeVar var
-      , parallel $ Nothing <$ readVar sealVar
+      [ parallel $ Just    <$> AVar.take var
+      , parallel $ Nothing <$  AVar.read sealVar
       ]
 
 {-| Convert an 'Output' to a 'Pipes.Consumer'
 -}
 toOutput
-  :: ∀ a m eff
-   . MonadAff (avar :: AVAR | eff) m
+  :: ∀ a m
+   . MonadAff m
   => Channel a
   -> Consumer_ a m Unit
 toOutput = toOutput' <<< output
 
 toOutput'
-  :: ∀ a m eff
-   . MonadAff (avar :: AVAR | eff) m
+  :: ∀ a m
+   . MonadAff m
   => Output a
   -> Consumer_ a m Unit
 toOutput' out = loop
@@ -187,15 +187,15 @@ toOutput' out = loop
 {-| Convert an 'Input' to a 'Pipes.Producer'
 -}
 fromInput
-  :: ∀ a m eff
-   . MonadAff (avar :: AVAR | eff) m
+  :: ∀ a m
+   . MonadAff m
   => Channel a
   -> Producer_ a m Unit
 fromInput = fromInput' <<< input
 
 fromInput'
-  :: ∀ a m eff
-   . MonadAff (avar :: AVAR | eff) m
+  :: ∀ a m
+   . MonadAff m
   => Input a
   -> Producer_ a m Unit
 fromInput' inp = loop
